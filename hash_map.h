@@ -14,6 +14,8 @@ namespace lock_based {
 template <typename Key, typename Value, typename Hash = std::hash<Key> >
 class hash_map final {
 private:
+    enum { MAX_LOAD_FACTOR = 3 };
+
     static std::size_t sizes[];
 #if 0
         1,
@@ -55,6 +57,8 @@ private:
     typedef std::list<bucket_value> bucket_data;
 
     struct bucket_type {
+        bucket_type() : m_mutex(new std::mutex) { }
+
         bool get(const Key & key, Value & value) const {
             auto it = std::find_if(
                 m_data.begin(),
@@ -97,7 +101,7 @@ private:
         }
 
         bucket_data m_data;
-        mutable std::mutex m_mutex;
+        std::unique_ptr<std::mutex> m_mutex;
     };
 
 public:
@@ -108,26 +112,35 @@ public:
     bool get(const Key & key, Value & value) const {
         const bucket_type & bucket = get_bucket(key);
 
-        std::lock_guard<std::mutex> lock(bucket.m_mutex);
+        std::lock_guard<std::mutex> lock(*bucket.m_mutex);
         return bucket.get(key, value);
     }
 
     void insert(const Key & key, const Value & value) {
+        if (MAX_LOAD_FACTOR < get_load_factor()) {
+            std::size_t size = !m_buckets.empty() ? m_buckets.size() * 2 : 1;
+            resize(size);
+        }
+
         bucket_type & bucket = get_bucket(key);
 
-        std::lock_guard<std::mutex> lock(bucket.m_mutex);
+        std::lock_guard<std::mutex> lock(*bucket.m_mutex);
         bucket.insert(key, value);
     }
 
     bool remove(const Key & key) {
         bucket_type & bucket = get_bucket(key);
 
-        std::lock_guard<std::mutex> lock(bucket.m_mutex);
+        std::lock_guard<std::mutex> lock(*bucket.m_mutex);
         return bucket.remove(key);
     }
 
     std::size_t size() const {
         return m_size;
+    }
+
+    void resize(std::size_t size) {
+        m_buckets.resize(size);
     }
 
 private:
@@ -143,6 +156,14 @@ private:
     bucket_type & get_bucket(const Key & key) {
         std::size_t bucket_index = m_hasher(key) % m_buckets.size();
         return m_buckets[bucket_index];
+    }
+
+    double get_load_factor() const {
+        if (!m_buckets.empty()) {
+            return static_cast<double>(m_size.load()) / m_buckets.size();
+        } else {
+            return MAX_LOAD_FACTOR + 1;
+        }
     }
 
     Hash m_hasher;
