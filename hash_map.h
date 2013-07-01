@@ -1,6 +1,9 @@
 #ifndef HASH_MAP_H
 #define HASH_MAP_H
 
+#include <boost/thread/shared_mutex.hpp>
+#include <boost/functional/hash.hpp>
+#include <boost/thread/mutex.hpp>
 #include <functional>
 #include <algorithm>
 #include <atomic>
@@ -11,12 +14,11 @@
 
 namespace lock_based {
 
-template <typename Key, typename Value, typename Hash = std::hash<Key> >
-class hash_map final {
+template <typename Key, typename Value, typename Hash = boost::hash<Key> >
+class hash_map {
 private:
-    enum { MAX_LOAD_FACTOR = 3 };
+    enum { MAX_LOAD_FACTOR = 2 };
 
-    static std::size_t sizes[];
 #if 0
         1,
         2,
@@ -57,7 +59,7 @@ private:
     typedef std::list<bucket_value> bucket_data;
 
     struct bucket_type {
-        bucket_type() : m_mutex(new std::mutex) { }
+        bucket_type() : m_mutex(new boost::shared_mutex) { }
 
         bool get(const Key & key, Value & value) const {
             auto it = std::find_if(
@@ -73,7 +75,7 @@ private:
             return true;
         }
 
-        void insert(const Key & key, const Value & value) {
+        bool insert(const Key & key, const Value & value) {
             auto it = std::find_if(
                 m_data.begin(),
                 m_data.end(),
@@ -81,8 +83,10 @@ private:
 
             if (it != m_data.end()) {
                 it->second = value;
+                return false;
             } else {
                 m_data.push_back(bucket_value(key, value));
+                return true;
             }
         }
 
@@ -101,7 +105,7 @@ private:
         }
 
         bucket_data m_data;
-        std::unique_ptr<std::mutex> m_mutex;
+        std::unique_ptr<boost::shared_mutex> m_mutex;
     };
 
 public:
@@ -109,52 +113,116 @@ public:
     typedef Value mapped_type;
     typedef std::pair<const Key, Value> value_type;
 
+    /*! \brief Get a value associated with the key. Return true if found. */
     bool get(const Key & key, Value & value) const {
+        boost::shared_lock<boost::shared_mutex> table_lock(m_mutex);
+
         const bucket_type & bucket = get_bucket(key);
 
-        std::lock_guard<std::mutex> lock(*bucket.m_mutex);
+        boost::shared_lock<boost::shared_mutex> bucket_lock(*bucket.m_mutex);
         return bucket.get(key, value);
     }
 
-    void insert(const Key & key, const Value & value) {
-        if (MAX_LOAD_FACTOR < get_load_factor()) {
-            std::size_t size = !m_buckets.empty() ? m_buckets.size() * 2 : 1;
-            resize(size);
+    /*!
+        \brief Add key/value pair to the table. Return true if a new element was
+               added, false if an existing element was updated.
+    */
+    bool insert(const value_type & value) {
+        return insert(value.first, value.second);
+    }
+
+    /*!
+        \brief Add key/value to the table. Return true if a new element was
+               added, false if an existing element was updated.
+    */
+    bool insert(const Key & key, const Value & value) {
+        bool can_insert = false;
+        do {
+            {
+                // Check if a resize is needed
+                boost::upgrade_lock<boost::shared_mutex> lock(m_mutex);
+
+                if (MAX_LOAD_FACTOR < get_load_factor()) {
+                    // Get new size
+                    size_t new_size = !m_buckets.empty() ? m_buckets.size() * 2 : 1;
+
+                    boost::upgrade_to_unique_lock<boost::shared_mutex> upgrade_lock(lock);
+                    // Create new bukets and copy over existing values
+                    resize(new_size);
+                }
+            }
+
+            boost::shared_lock<boost::shared_mutex> table_lock(m_mutex);
+            if (MAX_LOAD_FACTOR < get_load_factor()) {
+                continue;
+            }
+
+            can_insert = true;
+
+            bucket_type & bucket = get_bucket(key);
+
+            boost::unique_lock<boost::shared_mutex> bucket_lock(*bucket.m_mutex);
+            if (bucket.insert(key, value)) {
+                ++m_size;
+            }
+        } while (!can_insert);
+
+        return true;
+    }
+
+    /*! \brief Remove key/value associated with the key. Return true if item was indeed removed. */
+    bool remove(const Key & key) {
+        boost::shared_lock<boost::shared_mutex> table_lock(m_mutex);
+
+        bucket_type & bucket = get_bucket(key);
+
+        boost::unique_lock<boost::shared_mutex> bucket_lock(*bucket.m_mutex);
+        if (bucket.remove(key)) {
+            --m_size;
+            return true;
         }
 
-        bucket_type & bucket = get_bucket(key);
-
-        std::lock_guard<std::mutex> lock(*bucket.m_mutex);
-        bucket.insert(key, value);
+        return false;
     }
 
-    bool remove(const Key & key) {
-        bucket_type & bucket = get_bucket(key);
-
-        std::lock_guard<std::mutex> lock(*bucket.m_mutex);
-        return bucket.remove(key);
+    /*! \brief Remove all elements from the table container. */
+    void clear() {
+        boost::unique_lock<boost::shared_mutex> lock(m_mutex);
+        m_buckets.clear();
+        m_size = 0;
     }
 
-    std::size_t size() const {
+    /*! \brief Return number of elements in table. */
+    size_t size() const {
         return m_size;
     }
 
-    void resize(std::size_t size) {
-        m_buckets.resize(size);
+private:
+    /*! \brief Resize table to a new size and copy over existing elements. */
+    void resize(size_t new_size) {
+        std::vector<bucket_type> new_buckets(new_size);
+
+        for (size_t i = 0; i < m_buckets.size(); ++i) {
+            for (auto it = m_buckets[i].m_data.begin(); it != m_buckets[i].m_data.end(); ) {
+                 size_t bucket_index = m_hasher(it->first) % new_buckets.size();
+                 new_buckets[bucket_index].m_data.push_back(std::move(*(it++)));
+            }
+        }
+
+        m_buckets.swap(new_buckets);
     }
 
-private:
-    std::size_t get_bucket_index(const Key & key) const {
+    size_t get_bucket_index(const Key & key) const {
         return m_hasher(key) % m_buckets.size();
     }
 
     const bucket_type & get_bucket(const Key & key) const {
-        std::size_t bucket_index = m_hasher(key) % m_buckets.size();
+        size_t bucket_index = m_hasher(key) % m_buckets.size();
         return m_buckets[bucket_index];
     }
 
     bucket_type & get_bucket(const Key & key) {
-        std::size_t bucket_index = m_hasher(key) % m_buckets.size();
+        size_t bucket_index = m_hasher(key) % m_buckets.size();
         return m_buckets[bucket_index];
     }
 
@@ -166,11 +234,14 @@ private:
         }
     }
 
+    // TODO
     Hash m_hasher;
 
+    // TODO
     std::atomic<int> m_size;
 
     std::vector<bucket_type> m_buckets;
+    mutable boost::shared_mutex m_mutex;
 };
 
 } // namespace lock_based
