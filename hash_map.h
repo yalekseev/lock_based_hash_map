@@ -21,59 +21,7 @@ private:
 
     enum { MAX_LOAD_FACTOR = 2 };
 
-    typedef std::pair<const Key, Value> bucket_value;
-
-    typedef std::list<bucket_value> bucket_data;
-
-    struct bucket_type {
-        bucket_type() : m_mutex(new boost::shared_mutex) { }
-
-        bool get(const Key & key, Value & value) const {
-            auto it = std::find_if(
-                m_data.begin(),
-                m_data.end(),
-                [&](const bucket_value & item){ return item.first == key; });
-
-            if (it == m_data.end()) {
-                return false;
-            }
-
-            value = it->second;
-            return true;
-        }
-
-        bool insert(const Key & key, const Value & value) {
-            auto it = std::find_if(
-                m_data.begin(),
-                m_data.end(),
-                [&](const bucket_value & item){ return item.first == key; });
-
-            if (it != m_data.end()) {
-                it->second = value;
-                return false;
-            } else {
-                m_data.push_back(bucket_value(key, value));
-                return true;
-            }
-        }
-
-        bool remove(const Key & key) {
-            auto it = std::find_if(
-                m_data.begin(),
-                m_data.end(),
-                [&](const bucket_value & item){ return item.first == key; });
-
-            if (it != m_data.end()) {
-                m_data.erase(it);
-                return true;
-            }
-
-            return false;
-        }
-
-        bucket_data m_data;
-        std::unique_ptr<boost::shared_mutex> m_mutex;
-    };
+    struct bucket_type;
 
 public:
     typedef Key key_type;
@@ -120,7 +68,6 @@ private:
 
     double get_load_factor() const;
 
-    // TODO
     Hash m_hasher;
 
     // TODO
@@ -165,6 +112,57 @@ size_t hash_map<Key, Value, Hash>::next_buckets_counts[] = {
     536870909,
     1073741789,
     2147483647 };
+
+template <typename Key, typename Value, typename Hash>
+struct hash_map<Key, Value, Hash>::bucket_type {
+    bucket_type() : m_mutex(new boost::shared_mutex) { }
+
+    bool get(const Key & key, Value & value) const {
+        auto it = std::find_if(
+                m_data.begin(),
+                m_data.end(),
+                [&](const value_type & item){ return item.first == key; });
+
+        if (it == m_data.end()) {
+            return false;
+        }
+
+        value = it->second;
+        return true;
+    }
+
+    bool insert(const Key & key, const Value & value) {
+        auto it = std::find_if(
+                m_data.begin(),
+                m_data.end(),
+                [&](const value_type & item){ return item.first == key; });
+
+        if (it != m_data.end()) {
+            it->second = value;
+            return false;
+        } else {
+            m_data.push_back(value_type(key, value));
+            return true;
+        }
+    }
+
+    bool remove(const Key & key) {
+        auto it = std::find_if(
+                m_data.begin(),
+                m_data.end(),
+                [&](const value_type & item){ return item.first == key; });
+
+        if (it != m_data.end()) {
+            m_data.erase(it);
+            return true;
+        }
+
+        return false;
+    }
+
+    std::list<value_type> m_data;
+    std::unique_ptr<boost::shared_mutex> m_mutex;
+};
 
 template <typename Key, typename Value, typename Hash>
 hash_map<Key, Value, Hash>::hash_map() : m_size(0), m_next_buckets_count_index(0) { }
