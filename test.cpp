@@ -2,63 +2,33 @@
 
 #include <iostream>
 #include <cassert>
+#include <cstdlib>
+#include <string>
+#include <set>
 
 int main() {
-    lock_based::hash_map<std::string, int> hash;
+    std::srand(123);
 
-    hash.insert("One", 1);
-    hash.insert("Two", 2);
+    for (size_t i = 0; i < 10; ++i) {
+        lock_based::hash_map<std::string, int> hash;
+        std::set<int> expected_values;
 
-    assert(hash.size() == 2);
+        size_t size = std::rand() % 100000 + 20;
 
-    int val;
-    assert(hash.get("One", val) == true);
-    assert(val == 1);
+        for (size_t j = 0; j < size; ++j) {
+            int val = std::rand();
+            expected_values.insert(val);
+            hash.insert(std::to_string(val), val);
+        }
 
-    assert(hash.get("Two", val) == true);
-    assert(val == 2);
+        assert(hash.size() == expected_values.size());
+        for (int expected_val : expected_values) {
+            int val;
+            assert(hash.get(std::to_string(expected_val), val) == true);
+            assert(expected_val == val);
+        }
+    }
 
-
-    hash.insert("Three", 3);
-    hash.insert("Four", 4);
-
-    assert(hash.size() == 4);
-
-    assert(hash.get("One", val) == true);
-    assert(val == 1);
-
-    assert(hash.get("Two", val) == true);
-    assert(val == 2);
-
-    assert(hash.get("Three", val) == true);
-    assert(val == 3);
-
-    assert(hash.get("Four", val) == true);
-    assert(val == 4);
-
-
-    hash.insert("Five", 5);
-    hash.insert("Six", 6);
-
-    assert(hash.size() == 6);
-
-    assert(hash.get("One", val) == true);
-    assert(val == 1);
-
-    assert(hash.get("Two", val) == true);
-    assert(val == 2);
-
-    assert(hash.get("Three", val) == true);
-    assert(val == 3);
-
-    assert(hash.get("Four", val) == true);
-    assert(val == 4);
-
-    assert(hash.get("Five", val) == true);
-    assert(val == 5);
-
-    assert(hash.get("Six", val) == true);
-    assert(val == 6);
 
     return 0;
 }

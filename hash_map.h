@@ -17,42 +17,9 @@ namespace lock_based {
 template <typename Key, typename Value, typename Hash = boost::hash<Key> >
 class hash_map {
 private:
-    enum { MAX_LOAD_FACTOR = 2 };
+    static size_t next_buckets_counts[];
 
-#if 0
-        1,
-        2,
-        3,
-        7,
-        13,
-        31,
-        61,
-        127,
-        251,
-        509,
-        1021,
-        2039,
-        4093,
-        8191,
-        16381,
-        32749,
-        65521,
-        131071,
-        262139,
-        524287,
-        1048573,
-        2097143,
-        4194301,
-        8388593,
-        16777213,
-        33554393,
-        67108859,
-        134217689,
-        268435399,
-        536870909,
-        1073741789,
-        2147483647
-#endif
+    enum { MAX_LOAD_FACTOR = 2 };
 
     typedef std::pair<const Key, Value> bucket_value;
 
@@ -113,6 +80,8 @@ public:
     typedef Value mapped_type;
     typedef std::pair<const Key, Value> value_type;
 
+    hash_map();
+
     /*! \brief Get a value associated with the key. Return true if found. */
     bool get(const Key & key, Value & value) const;
 
@@ -139,7 +108,9 @@ public:
 
 private:
     /*! \brief Resize table to a new size and copy over existing elements. */
-    void resize(size_t new_size);
+    void resize(size_t new_buckets_count);
+
+    size_t get_next_buckets_count() const;
 
     size_t get_bucket_index(const Key & key) const;
 
@@ -155,9 +126,48 @@ private:
     // TODO
     std::atomic<int> m_size;
 
+    mutable int m_next_buckets_count_index;
+
     std::vector<bucket_type> m_buckets;
     mutable boost::shared_mutex m_mutex;
 };
+
+template <typename Key, typename Value, typename Hash>
+size_t hash_map<Key, Value, Hash>::next_buckets_counts[] = {
+    1,
+    3,
+    7,
+    13,
+    31,
+    61,
+    127,
+    251,
+    509,
+    1021,
+    2039,
+    4093,
+    8191,
+    16381,
+    32749,
+    65521,
+    131071,
+    262139,
+    524287,
+    1048573,
+    2097143,
+    4194301,
+    8388593,
+    16777213,
+    33554393,
+    67108859,
+    134217689,
+    268435399,
+    536870909,
+    1073741789,
+    2147483647 };
+
+template <typename Key, typename Value, typename Hash>
+hash_map<Key, Value, Hash>::hash_map() : m_size(0), m_next_buckets_count_index(0) { }
 
 template <typename Key, typename Value, typename Hash>
 bool hash_map<Key, Value, Hash>::get(const Key & key, Value & value) const {
@@ -184,11 +194,11 @@ bool hash_map<Key, Value, Hash>::insert(const Key & key, const Value & value) {
 
             if (MAX_LOAD_FACTOR < get_load_factor()) {
                 // Get new size
-                size_t new_size = !m_buckets.empty() ? m_buckets.size() * 2 : 1;
+                size_t new_buckets_count = get_next_buckets_count();
 
                 boost::upgrade_to_unique_lock<boost::shared_mutex> upgrade_lock(lock);
                 // Create new bukets and copy over existing values
-                resize(new_size);
+                resize(new_buckets_count);
             }
         }
 
@@ -238,8 +248,8 @@ size_t hash_map<Key, Value, Hash>::size() const {
 }
 
 template <typename Key, typename Value, typename Hash>
-void hash_map<Key, Value, Hash>::resize(size_t new_size) {
-    std::vector<bucket_type> new_buckets(new_size);
+void hash_map<Key, Value, Hash>::resize(size_t new_buckets_count) {
+    std::vector<bucket_type> new_buckets(new_buckets_count);
 
     for (size_t i = 0; i < m_buckets.size(); ++i) {
         for (auto it = m_buckets[i].m_data.begin(); it != m_buckets[i].m_data.end(); ) {
@@ -249,6 +259,13 @@ void hash_map<Key, Value, Hash>::resize(size_t new_size) {
     }
 
     m_buckets.swap(new_buckets);
+}
+
+template <typename Key, typename Value, typename Hash>
+size_t hash_map<Key, Value, Hash>::get_next_buckets_count() const {
+    size_t buckets_count = next_buckets_counts[m_next_buckets_count_index];
+    ++m_next_buckets_count_index;
+    return buckets_count;
 }
 
 template <typename Key, typename Value, typename Hash>
